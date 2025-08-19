@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <title>Face Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 12px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    video, canvas, img { width: 100%; border-radius: 8px; background: #111; }
+    fieldset { border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+    .btn { padding: 8px 12px; border-radius: 8px; border: 1px solid #888; background: #fafafa; cursor: pointer; }
+    .btn:active { transform: translateY(1px); }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .log { white-space: pre-wrap; background: #0e1116; color: #cde4ff; padding: 12px; border-radius: 8px; min-height: 100px; }
+  </style>
+</head>
+<body>
+  <h1>Face Enrollment / Recognition Demo</h1>
+  <div class="row">
+    <div>
+      <video id="video" autoplay playsinline></video>
+      <div style="margin-top:8px; display:flex; gap:8px;">
+        <button class="btn" id="snap">📸 Capture</button>
+        <button class="btn" id="clear">🧹 Clear Captures</button>
+      </div>
+      <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+    </div>
+    <div>
+      <fieldset>
+        <legend>Enroll</legend>
+        <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+          <label for="code">Code:</label>
+          <input id="code" placeholder="e.g. 65001" />
+          <button class="btn" id="enroll">➕ Enroll</button>
+        </div>
+        <div id="thumbs" class="grid"></div>
+      </fieldset>
+
+      <fieldset style="margin-top:12px;">
+        <legend>Recognize</legend>
+        <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+          <label for="type">Type:</label>
+          <select id="type">
+            <option value="checkin">checkin</option>
+            <option value="checkout">checkout</option>
+          </select>
+          <label for="th">Threshold:</label>
+          <input id="th" type="number" step="0.01" value="0.58" style="width:80px;" />
+          <button class="btn" id="recognize">🔍 Recognize</button>
+        </div>
+        <img id="preview" alt="last capture" />
+      </fieldset>
+
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <a class="btn" href="/api/attendance.csv">⬇️ Download attendance.csv</a>
+        <button class="btn" id="list">📄 List faces</button>
+        <button class="btn" id="reset">♻️ Reset DB</button>
+      </div>
+    </div>
+  </div>
+
+  <h3>Log</h3>
+  <div class="log" id="log"></div>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const snapBtn = document.getElementById('snap');
+    const clearBtn = document.getElementById('clear');
+    const thumbs = document.getElementById('thumbs');
+    const codeEl = document.getElementById('code');
+    const enrollBtn = document.getElementById('enroll');
+    const typeEl = document.getElementById('type');
+    const thEl = document.getElementById('th');
+    const recognizeBtn = document.getElementById('recognize');
+    const preview = document.getElementById('preview');
+    const logEl = document.getElementById('log');
+    const listBtn = document.getElementById('list');
+    const resetBtn = document.getElementById('reset');
+
+    let captures = [];
+
+    function log(...a) {
+      logEl.textContent = [new Date().toLocaleTimeString(), ...a].join(" ") + "\n" + logEl.textContent;
+    }
+
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+        video.srcObject = stream;
+      } catch (e) {
+        log("Camera error:", e.message);
+      }
+    }
+    start();
+
+    function captureToBase64() {
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.9);
+    }
+
+    snapBtn.onclick = () => {
+      const b64 = captureToBase64();
+      captures.push(b64);
+      const img = new Image();
+      img.src = b64;
+      img.style.width = "100%";
+      img.style.borderRadius = "6px";
+      thumbs.prepend(img);
+      preview.src = b64;
+      log("Captured.");
+    };
+
+    clearBtn.onclick = () => {
+      captures = [];
+      thumbs.innerHTML = "";
+      preview.removeAttribute('src');
+      log("Cleared captures.");
+    };
+
+    enrollBtn.onclick = async () => {
+      const code = codeEl.value.trim();
+      if (!code) { alert("กรอก Code ก่อน"); return; }
+      if (captures.length === 0) { alert("ถ่ายภาพอย่างน้อย 1 รูปก่อน"); return; }
+      const res = await fetch('/api/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, images: captures })
+      });
+      const j = await res.json();
+      log("Enroll:", JSON.stringify(j));
+      if (j.ok) alert(`Enrolled ${code} (${j.templates} templates)`);
+    };
+
+    // ====== เพิ่ม: ขอพิกัดครั้งเดียวตอนสแกน ======
+    function getLocationOnce() {
+      return new Promise((resolve, reject) => {
+        if (!('geolocation' in navigator)) return reject(new Error('เบราว์เซอร์ไม่รองรับ Geolocation'));
+        navigator.geolocation.getCurrentPosition(
+          pos => resolve({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy // เมตร
+          }),
+          err => reject(err),
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+      });
+    }
+
+    function humanReason(reason) {
+      switch (reason) {
+        case 'ok': return 'อยู่ในรัศมี';
+        case 'gps_accuracy_poor': return 'ความแม่นยำ GPS ต่ำ';
+        case 'no_sites_configured': return 'ยังไม่ได้ตั้งจุดอนุญาต';
+        case 'outside_radius': return 'อยู่นอกรัศมี';
+        case 'face_not_matched': return 'จำหน้าไม่สำเร็จ';
+        default: return reason || 'ไม่ทราบสาเหตุ';
+      }
+    }
+
+    recognizeBtn.onclick = async () => {
+      log("Recognize: start");
+      let img = preview.src || captureToBase64();
+      preview.src = img;
+      const threshold = parseFloat(thEl.value || "0.58");
+      const type = typeEl.value;
+
+      try {
+        const loc = await getLocationOnce(); // {lat,lng,accuracy}
+        const res = await fetch('/api/recognize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image: img,
+            threshold,
+            type,
+            lat: loc.lat,
+            lng: loc.lng,
+            accuracy: loc.accuracy
+          })
+        });
+        const j = await res.json();
+        log("Recognize:", JSON.stringify(j));
+
+        if (!j.ok) {
+          alert('❌ ' + (j.msg || 'สแกนล้มเหลว'));
+          return;
+        }
+
+        const gf = j.geofence || {};
+        if (j.matched && gf.within) {
+          alert(`✅ ${j.name} (${j.score}) • ในรัศมี ~${(gf.distance_m ?? 0)} m`);
+        } else {
+          const dist = gf.distance_m != null ? ` (ห่าง ~${gf.distance_m} m)` : '';
+          alert(`⛔ ปฏิเสธ: ${humanReason(gf.reason)}${dist} • matched=${j.matched ? 'yes' : 'no'}`);
+        }
+      } catch (e) {
+        log("Recognize error:", e.message);
+        alert('❌ ' + e.message);
+      }
+    };
+
+    listBtn.onclick = async () => {
+      const j = await fetch('/api/faces').then(r => r.json());
+      log("Faces:", JSON.stringify(j));
+    };
+
+    resetBtn.onclick = async () => {
+      if (!confirm("ล้างฐานข้อมูลใบหน้าทั้งหมด?")) return;
+      const j = await fetch('/api/reset', { method: 'POST' }).then(r => r.json());
+      log("Reset:", JSON.stringify(j));
+    };
+  </script>
+</body>
+</html>
